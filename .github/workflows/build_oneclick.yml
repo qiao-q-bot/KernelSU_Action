@@ -101,7 +101,7 @@ jobs:
         echo "Optional: fastboot reboot" >> flash_commands.txt
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: boot_artifacts
         path: |
