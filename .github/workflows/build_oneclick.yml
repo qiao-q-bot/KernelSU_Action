@@ -1,0 +1,110 @@
+name: OneClick Build OnePlus 6T 4.9 Kernel + KernelSU
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'Kernel branch'
+        default: 'oneplus/SDM845_P_9.0'
+        required: true
+      kernelsu_tag:
+        description: 'KernelSU tag/version'
+        default: 'v0.9.5'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      CONFIG_ENV: config.env
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        submodules: true
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y git wget curl unzip bc bison flex libssl-dev ccache zip fastboot
+
+    - name: Export config.env variables
+      run: |
+        set -o allexport
+        source ${{ env.CONFIG_ENV }}
+        set +o allexport
+
+    - name: Setup ccache
+      if: env.ENABLE_CCACHE == 'true'
+      run: |
+        export CCACHE_DIR=$HOME/.ccache
+        ccache -M 10G
+        ccache -s
+
+    - name: Download GCC 64-bit
+      if: env.USE_CUSTOM_GCC_64 == 'true'
+      run: |
+        git clone --depth=1 -b $CUSTOM_GCC_64_BRANCH $CUSTOM_GCC_64_SOURCE prebuilts/gcc64
+
+    - name: Download GCC 32-bit
+      if: env.USE_CUSTOM_GCC_32 == 'true'
+      run: |
+        git clone --depth=1 -b $CUSTOM_GCC_32_BRANCH $CUSTOM_GCC_32_SOURCE prebuilts/gcc32
+
+    - name: Download Clang (optional)
+      if: env.USE_CUSTOM_CLANG == 'true'
+      run: |
+        git clone --depth=1 -b $CUSTOM_CLANG_BRANCH $CUSTOM_CLANG_SOURCE prebuilts/clang
+
+    - name: Download Kernel Source
+      run: |
+        git clone --depth=1 -b ${{ github.event.inputs.kernel_branch }} $KERNEL_SOURCE kernel
+
+    - name: Apply KernelSU patch
+      if: env.APPLY_KSU_PATCH == 'true'
+      run: |
+        echo "Downloading and applying KernelSU patch..."
+        curl -L https://github.com/tiann/KernelSU/releases/download/${{ github.event.inputs.kernelsu_tag }}/ksu.patch -o ksu.patch
+        patch -p1 -d kernel < ksu.patch
+
+    - name: Download DTBO image
+      if: env.NEED_DTBO == 'true'
+      run: |
+        wget -O dtbo.img $SOURCE_BOOT_IMAGE
+
+    - name: Build Kernel
+      run: |
+        cd kernel
+        export PATH=$PWD/../prebuilts/gcc64/bin:$PWD/../prebuilts/gcc32/bin:$PATH
+        export ARCH=$ARCH
+        export CROSS_COMPILE=$CUSTOM_GCC_64_BIN
+        export CCACHE_DIR=$HOME/.ccache
+        make $KERNEL_CONFIG
+        make -j$(nproc) $KERNEL_IMAGE_NAME
+
+    - name: Build boot.img with AnyKernel3
+      run: |
+        git clone --depth=1 -b $CUSTOM_ANYKERNEL3_BRANCH $CUSTOM_ANYKERNEL3_SOURCE AnyKernel3
+        cp kernel/$KERNEL_IMAGE_NAME AnyKernel3/
+        cp -r kernel/arch/arm64/boot/dts/qcom AnyKernel3/dtbs/
+        [ -f dtbo.img ] && cp dtbo.img AnyKernel3/
+        cd AnyKernel3
+        zip -r boot.zip *
+        sha256sum boot.zip > boot.zip.sha256
+
+    - name: Generate fastboot flash commands
+      run: |
+        echo "fastboot flash boot boot.zip" > flash_commands.txt
+        echo "Optional: fastboot flash dtbo dtbo.img" >> flash_commands.txt
+        echo "Optional: fastboot reboot" >> flash_commands.txt
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: boot_artifacts
+        path: |
+          AnyKernel3/boot.zip
+          AnyKernel3/boot.zip.sha256
+          AnyKernel3/flash_commands.txt
